@@ -1,0 +1,9 @@
+# Ignore credentials
+credentials.json
+
+# Bytecode and cache
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
