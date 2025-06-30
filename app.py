@@ -21,7 +21,7 @@ scope = [
 creds_dict = json.loads(st.secrets["GOOGLE_SHEETS_CREDENTIALS"])
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 #creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-#client = gspread.authorize(creds)
+client = gspread.authorize(creds)
 
 # Sheet names
 data_sheet = client.open("RealEstateData").worksheet("housing_data")
