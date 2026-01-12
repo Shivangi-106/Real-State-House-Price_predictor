@@ -1,173 +1,141 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import json
 import os
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from joblib import dump, load
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+import mysql.connector
 
-# ------------------ PAGE CONFIG ------------------ #
-st.set_page_config(
-    page_title="Real Estate Price Prediction",
-    layout="centered",
-    initial_sidebar_state="collapsed"
-)
-
-# ------------------ GOOGLE SHEETS SETUP ------------------ #
-scope = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-    "https://www.googleapis.com/auth/drive.file",
-]
-
-creds_dict = json.loads(st.secrets["GOOGLE_SHEETS_CREDENTIALS"])
-creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-client = gspread.authorize(creds)
-
-data_sheet = client.open("RealEstateData").worksheet("housing_data")
-data_copy_sheet = client.open("RealEstateData").worksheet("data_copy")
-
-# ------------------ CONSTANTS ------------------ #
-COLUMNS = [
-    "Crime rate in the town",
-    "Percentage of land for large residential plots(higher values indicate premium housing areas)",
-    "Share of land used for industrial purposes",
-    "Is area near the Charles River (1 = yes, 0 = no)", 
-    "Level of air pollution in the area",
-    "Average number of rooms per house", 
-    "Percentage of houses built before 1940",
-    "Distance from major employment centers", 
-    "Accessibility to highways", 
-    "Property tax rate in the town", 
-    "Student-to-teacher ratio in schools of area", 
-    "Numeric value related to the town’s population", 
-    "Percentage of lower-income population"
-]
+# ------------------ DB CONFIG ------------------
+DB_CONFIG = {
+    'host': 'localhost',         # 🔁 Change if needed
+    'user': 'root',              # 🔁 Change to your MySQL username
+    'password': '143143', # 🔁 Change to your MySQL password
+    'database': 'house_price_db'
+}
 
 MODEL_FILE = "model.joblib"
-MODEL_COLUMNS_FILE = "model_columns.json"
 
-# ------------------ DATA LOADER ------------------ #
-@st.cache_data(ttl=60)
-def get_data_from_sheet(_sheet):
-    df = pd.DataFrame(_sheet.get_all_records())
-    for col in COLUMNS + ['MEDV']:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+COLUMNS = ['CRIM', 'ZN', 'INDUS', 'CHAS', 'NOX', 'RM', 'AGE',
+           'DIS', 'RAD', 'TAX', 'PTRATIO', 'B', 'LSTAT']
+
+# ------------------ DB FUNCTIONS ------------------
+def get_connection():
+    return mysql.connector.connect(**DB_CONFIG)
+
+def fetch_data(table):
+    conn = get_connection()
+    df = pd.read_sql(f"SELECT * FROM {table}", conn)
+    conn.close()
     return df
 
-housing_df = get_data_from_sheet(data_sheet)
-data_copy_df = get_data_from_sheet(data_copy_sheet)
+def insert_input_to_db(data_dict, table='data_copy'):
+    conn = get_connection()
+    cursor = conn.cursor()
 
-# ------------------ MODEL TRAINING ------------------ #
+    cols = ', '.join(data_dict.keys())
+    vals = ', '.join(['%s'] * len(data_dict))
+    sql = f"INSERT INTO {table} ({cols}) VALUES ({vals})"
+
+    cursor.execute(sql, tuple(data_dict.values()))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def move_data_to_main():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO housing_data (CRIM, ZN, INDUS, CHAS, NOX, RM, AGE, DIS, RAD, TAX, PTRATIO, B, LSTAT, MEDV) SELECT CRIM, ZN, INDUS, CHAS, NOX, RM, AGE, DIS, RAD, TAX, PTRATIO, B, LSTAT, MEDV FROM data_copy")
+    cursor.execute("DELETE FROM data_copy")
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+# ------------------ MODEL ------------------
 def train_and_save_model(df):
-    df = df.dropna(subset=['MEDV'])
-
-    # Keep only columns present in the sheet
-    valid_cols = [c for c in COLUMNS if c in df.columns]
-
-    # Convert all columns to numeric
-    X = df[valid_cols].apply(pd.to_numeric, errors='coerce')
-
-    # Drop columns with all NaNs
-    X = X.dropna(axis=1, how='all')
-    valid_cols = X.columns.tolist()  # update valid columns
-
-    y = df['MEDV'].apply(pd.to_numeric, errors='coerce')
-
-    # Drop rows where target is NaN
-    X = X.loc[y.notna()]
-    y = y.loc[y.notna()]
-
-    # Train pipeline
+    df_clean = df.dropna(subset=['MEDV'])
+    X = df_clean[COLUMNS]
+    y = df_clean['MEDV']
     pipeline = Pipeline([
         ('scaler', StandardScaler()),
-        ('model', RandomForestRegressor(n_estimators=200, random_state=42))
+        ('model', RandomForestRegressor())
     ])
     pipeline.fit(X, y)
-
-    # Save model and columns
     dump(pipeline, MODEL_FILE)
-    with open(MODEL_COLUMNS_FILE, "w") as f:
-        json.dump(valid_cols, f)
-
     return pipeline
 
-# Load existing model or train a new one
-if os.path.exists(MODEL_FILE) and os.path.exists(MODEL_COLUMNS_FILE):
+# ------------------ LOAD MODEL ------------------
+try:
     model = load(MODEL_FILE)
-    trained_cols = json.load(open(MODEL_COLUMNS_FILE))
-else:
-    model = train_and_save_model(housing_df)
-    trained_cols = json.load(open(MODEL_COLUMNS_FILE))
+except:
+    df_init = fetch_data('housing_data')
+    model = train_and_save_model(df_init)
 
-# ------------------ UI ------------------ #
+# ------------------ UI ------------------
 st.title("🏠 Real Estate Price Prediction")
-st.write("Enter property details below. Fill at least **11 out of 13** fields.")
 
-# ------------------ FORM ------------------ #
-with st.form("prediction_form"):
-    user_input = {}
-    for col in COLUMNS:
-        user_input[col] = st.number_input(
-            label=col,
-            value=None,
-            step=0.01,
-            format="%.2f"
-        )
-    submit = st.form_submit_button("Predict")
+st.markdown("""
+Enter the property details below. Please follow the format guidelines:
 
-# ------------------ PREDICTION ------------------ #
-if submit:
-    filled = {}
-    empty = 0
+- **CRIM**: Crime in % (e.g., `2` for 2%)
+- **ZN**: Residential zone in % (e.g., `25`)
+- **INDUS**: Industry area in % (e.g., `15`)
+- **CHAS**: 0 = No river bound, 1 = River bound
+- **NOX**: Nitric oxide concentration in % (e.g., `0.5`)
+- **RM**: Number of rooms (e.g., `3`, `6.5`)
+- **AGE**: Age of house (e.g., `50`)
+- **DIS**: Distance to jobs in km (e.g., `4.2`)
+- **RAD**: Highway access in km (e.g., `3`)
+- **TAX**: Tax in % per $1000 (e.g., `18`)
+- **PTRATIO**: Pupil-teacher ratio (e.g., `15.5`)
+- **B**: Black population index (as-is)
+- **LSTAT**: Lower status population % (e.g., `5.3`)
+""")
 
-    for col in COLUMNS:
-        val = user_input[col]
-        if val is None:
-            filled[col] = np.nan
-            empty += 1
-        else:
-            # Original scaling/int logic
-            if col in ['CRIM','ZN','INDUS','NOX','LSTAT','TAX']:
-                filled[col] = float(val) / 100
-            elif col == 'CHAS':
-                filled[col] = int(val)
-            else:
-                filled[col] = float(val)
+user_input = {}
+empty_count = 0
 
-    if empty > 2:
+for col in COLUMNS:
+    val = st.text_input(f"{col}:", key=col)
+    if val.strip() == '':
+        empty_count += 1
+    user_input[col] = val.strip()
+
+if st.button("Predict"):
+    if empty_count > 2:
         st.error("❌ Please fill at least 11 out of 13 fields.")
     else:
-        input_df = pd.DataFrame([filled])
+        try:
+            processed = {}
+            for col in COLUMNS:
+                val = user_input[col]
+                if val == '':
+                    processed[col] = np.nan
+                else:
+                    num = float(val)
+                    if col in ['CRIM', 'ZN', 'INDUS', 'NOX', 'LSTAT', 'TAX']:
+                        processed[col] = num / 100
+                    elif col == 'CHAS':
+                        processed[col] = int(num)
+                    else:
+                        processed[col] = num
 
-        # ------------------ ALIGN INPUT WITH TRAINED MODEL ------------------ #
-        input_filled = input_df.reindex(columns=trained_cols)
-        input_filled = input_filled.fillna(housing_df[trained_cols].mean())
+            input_df = pd.DataFrame([processed])
+            filled_input = input_df.fillna(fetch_data('housing_data')[COLUMNS].mean())
+            prediction = model.predict(filled_input)[0]
+            st.success(f"💵 Predicted house price: ${prediction * 1000:,.0f}")
 
-        prediction = model.predict(input_filled)[0]
-        st.success(f"💵 Predicted house price: $ {prediction * 1000:,.0f}")
+            input_df['MEDV'] = round(prediction, 1)
+            insert_input_to_db(input_df.iloc[0].to_dict(), table='data_copy')
 
-        # ------------------ SAVE TO GOOGLE SHEET ------------------ #
-        input_df['MEDV'] = round(float(prediction), 1)
-        row = input_df.iloc[0].tolist()
-        clean_row = ["" if pd.isna(x) else float(x) for x in row]
-        data_copy_sheet.append_rows([clean_row], value_input_option="USER_ENTERED")
+            # Retrain after every 10 entries
+            copy_data = fetch_data('data_copy')
+            if len(copy_data) >= 10:
+                retrained_model = train_and_save_model(copy_data)
+                model = retrained_model
+                move_data_to_main()  # clear data_copy and move to housing_data
 
-        # ------------------ RETRAIN CHECK ------------------ #
-        updated = pd.DataFrame(data_copy_sheet.get_all_records())
-        updated_cols = [c for c in COLUMNS if c in updated.columns] + ['MEDV']
-        updated[updated_cols] = updated[updated_cols].apply(pd.to_numeric, errors='coerce')
-
-        if len(updated) - len(housing_df) >= 10:
-            model = train_and_save_model(updated.dropna(subset=['MEDV']))
-            data_sheet.clear()
-            data_sheet.append_rows(
-                [updated.columns.tolist()] + updated.fillna("").values.tolist(),
-                value_input_option="USER_ENTERED"
-            )
+        except Exception as e:
+            st.error(f"⚠️ Error: {e}")
