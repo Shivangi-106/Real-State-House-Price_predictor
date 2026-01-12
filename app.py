@@ -39,8 +39,19 @@ data_copy_sheet = client.open("RealEstateData").worksheet("data_copy")
 
 # ================== CONSTANTS ================== #
 COLUMNS = [
-    "CRIM", "ZN", "INDUS", "CHAS", "NOX", "RM", "AGE",
-    "DIS", "RAD", "TAX", "PTRATIO", "B", "LSTAT"
+    "Crime rate in the town",
+    "Percentage of land for large residential plots(higher values indicate premium housing areas)",
+    "Share of land used for industrial purposes",
+    "Is area near the Charles River (1 = yes, 0 = no)", 
+    "Level of air pollution in the area",
+    "Average number of rooms per house", 
+    "Percentage of houses built before 1940",
+    "Distance from major employment centers", 
+    "Accessibility to highways", 
+    "roperty tax rate in the town", 
+    "Student-to-teacher ratio in schools of area", 
+    "numeric value related to the town’s population", 
+    "Percentage of lower-income population"
 ]
 
 MODEL_FILE = "model.joblib"
@@ -97,7 +108,7 @@ with st.form("prediction_form"):
     for col in COLUMNS:
         user_input[col] = st.number_input(
             label=col,
-            value=None,
+            value=0,
             step=0.01,
             format="%.2f"
         )
