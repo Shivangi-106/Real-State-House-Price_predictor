@@ -108,7 +108,7 @@ with st.form("prediction_form"):
     for col in COLUMNS:
         user_input[col] = st.number_input(
             label=col,
-            value=0,
+            value=0.0,
             step=0.01,
             format="%.2f"
         )
