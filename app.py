@@ -95,6 +95,7 @@ with st.form("prediction_form"):
     submit = st.form_submit_button("Predict")
 
 # ------------------ PREDICTION ------------------ #
+# ------------------ PREDICTION ------------------ #
 if submit:
     filled = {}
     empty = 0
@@ -116,15 +117,19 @@ if submit:
         st.error("❌ Please fill at least 11 out of 13 fields.")
     else:
         input_df = pd.DataFrame([filled])
-        input_filled = input_df.fillna(housing_df[COLUMNS].mean())
+
+        # -------- FIX FOR KeyError -------- #
+        valid_cols = [c for c in COLUMNS if c in housing_df.columns]
+        input_filled = input_df.fillna(housing_df[valid_cols].mean())
+        input_filled = input_filled[valid_cols]  # keep only valid columns
 
         prediction = model.predict(input_filled)[0]
         st.success(f"💵 Predicted house price: $ {prediction * 1000:,.0f}")
 
+        # ------------------ SAVE ------------------ #
         input_df['MEDV'] = round(float(prediction), 1)
         row = input_df.iloc[0].tolist()
         clean_row = ["" if pd.isna(x) else float(x) for x in row]
-
         data_copy_sheet.append_rows([clean_row], value_input_option="USER_ENTERED")
 
         updated = pd.DataFrame(data_copy_sheet.get_all_records())
@@ -137,5 +142,3 @@ if submit:
                 [updated.columns.tolist()] + updated.fillna("").values.tolist(),
                 value_input_option="USER_ENTERED"
             )
-
-
