@@ -12,6 +12,7 @@ from joblib import dump, load
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+
 # ================== PAGE CONFIG ================== #
 st.set_page_config(
     page_title="Real Estate Price Prediction",
@@ -19,7 +20,8 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ================== GOOGLE SHEETS ================== #
+
+# ================== GOOGLE SHEETS AUTH ================== #
 SCOPE = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/spreadsheets",
@@ -34,6 +36,7 @@ client = gspread.authorize(creds)
 data_sheet = client.open("RealEstateData").worksheet("housing_data")
 data_copy_sheet = client.open("RealEstateData").worksheet("data_copy")
 
+
 # ================== CONSTANTS ================== #
 COLUMNS = [
     "CRIM", "ZN", "INDUS", "CHAS", "NOX", "RM", "AGE",
@@ -42,8 +45,8 @@ COLUMNS = [
 
 MODEL_FILE = "model.joblib"
 
-# ================== DATA LOAD ================== #
-@st.cache_data(ttl=60)
+
+# ================== DATA LOADER (NO CACHE ❗) ================== #
 def load_sheet(sheet):
     df = pd.DataFrame(sheet.get_all_records())
     for col in COLUMNS + ["MEDV"]:
@@ -51,33 +54,41 @@ def load_sheet(sheet):
             df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
+
 housing_df = load_sheet(data_sheet)
 data_copy_df = load_sheet(data_copy_sheet)
+
 
 # ================== MODEL ================== #
 def train_and_save_model(df):
     df = df.dropna(subset=["MEDV"])
+
     X = df[COLUMNS]
     y = df["MEDV"]
 
-    pipe = Pipeline([
+    model = Pipeline([
         ("scaler", StandardScaler()),
-        ("model", RandomForestRegressor(random_state=42))
+        ("rf", RandomForestRegressor(
+            n_estimators=200,
+            random_state=42
+        ))
     ])
 
-    pipe.fit(X, y)
-    dump(pipe, MODEL_FILE)
-    return pipe
+    model.fit(X, y)
+    dump(model, MODEL_FILE)
+    return model
+
 
 if os.path.exists(MODEL_FILE):
     model = load(MODEL_FILE)
 else:
     model = train_and_save_model(housing_df)
 
+
 # ================== UI ================== #
 st.title("🏠 Real Estate Price Prediction")
+st.write("Enter property details below. Fill at least **11 out of 13** fields.")
 
-st.write("Enter property details below. Use decimal values where applicable.")
 
 # ================== FORM ================== #
 with st.form("prediction_form"):
@@ -93,36 +104,38 @@ with st.form("prediction_form"):
 
     submitted = st.form_submit_button("Predict")
 
+
 # ================== PREDICTION ================== #
 if submitted:
-    filled = {}
+    processed = {}
     empty_count = 0
 
     for col in COLUMNS:
         val = user_input[col]
 
         if val is None:
-            filled[col] = np.nan
+            processed[col] = np.nan
             empty_count += 1
         else:
             if col in ["CRIM", "ZN", "INDUS", "NOX", "LSTAT", "TAX"]:
-                filled[col] = val / 100
+                processed[col] = val / 100
             elif col == "CHAS":
-                filled[col] = int(val)
+                processed[col] = int(val)
             else:
-                filled[col] = val
+                processed[col] = val
 
     if empty_count > 2:
-        st.error("Please fill at least 11 out of 13 fields.")
+        st.error("❌ Please fill at least 11 out of 13 fields.")
     else:
-        input_df = pd.DataFrame([filled])
+        input_df = pd.DataFrame([processed])
         input_df = input_df.fillna(housing_df[COLUMNS].mean())
 
         prediction = model.predict(input_df)[0]
-        st.success(f"Predicted house price: ${prediction * 1000:,.0f}")
 
-        # Save to sheet
-        save_df = pd.DataFrame([filled])
+        st.success(f"💵 Predicted house price: $ {prediction * 1000:,.0f}")
+
+        # ------------------ SAVE TO SHEET ------------------ #
+        save_df = pd.DataFrame([processed])
         save_df["MEDV"] = round(float(prediction), 1)
 
         row = [
@@ -135,14 +148,15 @@ if submitted:
             value_input_option="USER_ENTERED"
         )
 
-        # ================== RETRAIN CHECK ================== #
-        updated = load_sheet(data_copy_sheet)
+        # ------------------ RETRAIN CHECK ------------------ #
+        updated_df = load_sheet(data_copy_sheet)
 
-        if len(updated) - len(housing_df) >= 10:
-            model = train_and_save_model(updated)
+        if len(updated_df) - len(housing_df) >= 10:
+            model = train_and_save_model(updated_df)
+
             data_sheet.clear()
             data_sheet.append_rows(
-                [updated.columns.tolist()] +
-                updated.fillna("").values.tolist(),
+                [updated_df.columns.tolist()] +
+                updated_df.fillna("").values.tolist(),
                 value_input_option="USER_ENTERED"
             )
