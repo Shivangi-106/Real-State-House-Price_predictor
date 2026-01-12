@@ -3,24 +3,22 @@ import pandas as pd
 import numpy as np
 import json
 import os
-
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from joblib import dump, load
-
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# ================== PAGE CONFIG ================== #
+# ------------------ PAGE CONFIG (STEP 1) ------------------ #
 st.set_page_config(
     page_title="Real Estate Price Prediction",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
 
-# ================== GOOGLE SHEETS AUTH ================== #
-SCOPE = [
+# ------------------ GOOGLE SHEETS SETUP ------------------ #
+scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -28,15 +26,13 @@ SCOPE = [
 ]
 
 creds_dict = json.loads(st.secrets["GOOGLE_SHEETS_CREDENTIALS"])
-creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 
 data_sheet = client.open("RealEstateData").worksheet("housing_data")
 data_copy_sheet = client.open("RealEstateData").worksheet("data_copy")
 
-# ================== CONSTANTS ================== #
-COLUMNS = [
-    "Crime rate in the town",
+COLUMNS = ["Crime rate in the town",
     "Percentage of land for large residential plots(higher values indicate premium housing areas)",
     "Share of land used for industrial purposes",
     "Is area near the Charles River (1 = yes, 0 = no)", 
@@ -48,104 +44,98 @@ COLUMNS = [
     "Property tax rate in the town", 
     "Student-to-teacher ratio in schools of area", 
     "Numeric value related to the town’s population", 
-    "Percentage of lower-income population"
-]
+    "Percentage of lower-income population"]
 
 MODEL_FILE = "model.joblib"
 
-# ================== DATA LOADER ================== #
-def load_sheet(sheet):
-    df = pd.DataFrame(sheet.get_all_records())
-    # Ensure all COLUMNS exist
-    for col in COLUMNS + ["MEDV"]:
+# ------------------ DATA CACHE ------------------ #
+@st.cache_data(ttl=60)
+def get_data_from_sheet(_sheet):
+    df = pd.DataFrame(_sheet.get_all_records())
+    for col in COLUMNS + ['MEDV']:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+            df[col] = pd.to_numeric(df[col], errors='coerce')
     return df
 
-housing_df = load_sheet(data_sheet)
-data_copy_df = load_sheet(data_copy_sheet)
+housing_df = get_data_from_sheet(data_sheet)
+data_copy_df = get_data_from_sheet(data_copy_sheet)
 
-# ================== MODEL ================== #
+# ------------------ MODEL ------------------ #
 def train_and_save_model(df):
-    df = df.dropna(subset=["MEDV"])
-    # Only use columns present in df
-    valid_cols = [c for c in COLUMNS if c in df.columns]
-    X = df[valid_cols]
-    y = df["MEDV"]
+    df = df.dropna(subset=['MEDV'])
+    X = df[COLUMNS]
+    y = df['MEDV']
 
-    model = Pipeline([
-        ("scaler", StandardScaler()),
-        ("rf", RandomForestRegressor(n_estimators=200, random_state=42))
+    pipeline = Pipeline([
+        ('scaler', StandardScaler()),
+        ('model', RandomForestRegressor())
     ])
-    model.fit(X, y)
-    dump(model, MODEL_FILE)
-    return model
+    pipeline.fit(X, y)
+    dump(pipeline, MODEL_FILE)
+    return pipeline
 
-# Load or train model
-if os.path.exists(MODEL_FILE):
-    model = load(MODEL_FILE)
-else:
-    model = train_and_save_model(housing_df)
+model = load(MODEL_FILE) if os.path.exists(MODEL_FILE) else train_and_save_model(housing_df)
 
-# ================== UI ================== #
+# ------------------ UI ------------------ #
 st.title("🏠 Real Estate Price Prediction")
-st.write("Enter property details below. Fill at least **11 out of 13** fields.")
 
-# ================== FORM ================== #
+# ------------------ FORM (STEP 3) ------------------ #
 with st.form("prediction_form"):
+
     user_input = {}
 
     for col in COLUMNS:
-        # All inputs as float to avoid mixed types
         user_input[col] = st.number_input(
-            label=col,
-            value=0.0,
+            col,
+            value=None,
             step=0.01,
             format="%.2f"
         )
 
-    submitted = st.form_submit_button("Predict")
+    submit = st.form_submit_button("Predict")
 
-# ================== PREDICTION ================== #
-if submitted:
-    processed = {}
-    empty_count = 0
+# ------------------ PREDICTION ------------------ #
+if submit:
+    filled = {}
+    empty = 0
 
     for col in COLUMNS:
         val = user_input[col]
-        if val is None or val == 0.0:
-            processed[col] = np.nan
-            empty_count += 1
+        if val is None:
+            filled[col] = np.nan
+            empty += 1
         else:
-            processed[col] = float(val)
+            if col in ['CRIM','ZN','INDUS','NOX','LSTAT','TAX']:
+                filled[col] = val / 100
+            elif col == 'CHAS':
+                filled[col] = int(val)
+            else:
+                filled[col] = val
 
-    if empty_count > 2:
+    if empty > 2:
         st.error("❌ Please fill at least 11 out of 13 fields.")
     else:
-        # Use only columns present in housing_df to avoid KeyError
-        valid_cols = [c for c in COLUMNS if c in housing_df.columns]
-        input_df = pd.DataFrame([processed])[valid_cols]
+        input_df = pd.DataFrame([filled])
+        input_filled = input_df.fillna(housing_df[COLUMNS].mean())
 
-        # Fill missing values with mean
-        means = housing_df[valid_cols].mean()
-        input_df = input_df.fillna(means)
-
-        prediction = model.predict(input_df)[0]
+        prediction = model.predict(input_filled)[0]
         st.success(f"💵 Predicted house price: $ {prediction * 1000:,.0f}")
 
-        # ------------------ SAVE TO SHEET ------------------ #
-        save_df = pd.DataFrame([processed])
-        save_df["MEDV"] = round(float(prediction), 1)
-        row = ["" if pd.isna(x) else float(x) for x in save_df.iloc[0].tolist()]
-        data_copy_sheet.append_rows([row], value_input_option="USER_ENTERED")
+        input_df['MEDV'] = round(float(prediction), 1)
+        row = input_df.iloc[0].tolist()
+        clean_row = ["" if pd.isna(x) else float(x) for x in row]
 
-        # ------------------ RETRAIN CHECK ------------------ #
-        updated_df = load_sheet(data_copy_sheet)
-        if len(updated_df) - len(housing_df) >= 10:
-            model = train_and_save_model(updated_df)
+        data_copy_sheet.append_rows([clean_row], value_input_option="USER_ENTERED")
+
+        updated = pd.DataFrame(data_copy_sheet.get_all_records())
+        updated[COLUMNS + ['MEDV']] = updated[COLUMNS + ['MEDV']].apply(pd.to_numeric, errors='coerce')
+
+        if len(updated) - len(housing_df) >= 10:
+            model = train_and_save_model(updated.dropna(subset=['MEDV']))
             data_sheet.clear()
             data_sheet.append_rows(
-                [updated_df.columns.tolist()] +
-                updated_df.fillna("").values.tolist(),
+                [updated.columns.tolist()] + updated.fillna("").values.tolist(),
                 value_input_option="USER_ENTERED"
             )
+
+
