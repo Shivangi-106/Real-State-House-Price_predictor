@@ -64,27 +64,41 @@ def get_data_from_sheet(_sheet):
 housing_df = get_data_from_sheet(data_sheet)
 data_copy_df = get_data_from_sheet(data_copy_sheet)
 
-# ------------------ MODEL ------------------ #
+# ------------------ MODEL TRAINING ------------------ #
 def train_and_save_model(df):
     df = df.dropna(subset=['MEDV'])
-    valid_cols = [c for c in COLUMNS if c in df.columns]
-    X = df[valid_cols]
-    y = df['MEDV']
 
+    # Keep only columns present in the sheet
+    valid_cols = [c for c in COLUMNS if c in df.columns]
+
+    # Convert all columns to numeric
+    X = df[valid_cols].apply(pd.to_numeric, errors='coerce')
+
+    # Drop columns with all NaNs
+    X = X.dropna(axis=1, how='all')
+    valid_cols = X.columns.tolist()  # update valid columns
+
+    y = df['MEDV'].apply(pd.to_numeric, errors='coerce')
+
+    # Drop rows where target is NaN
+    X = X.loc[y.notna()]
+    y = y.loc[y.notna()]
+
+    # Train pipeline
     pipeline = Pipeline([
         ('scaler', StandardScaler()),
         ('model', RandomForestRegressor(n_estimators=200, random_state=42))
     ])
     pipeline.fit(X, y)
+
+    # Save model and columns
     dump(pipeline, MODEL_FILE)
-    
-    # Save columns used for training to maintain order
     with open(MODEL_COLUMNS_FILE, "w") as f:
         json.dump(valid_cols, f)
-    
+
     return pipeline
 
-# Load model or train if not exist
+# Load existing model or train a new one
 if os.path.exists(MODEL_FILE) and os.path.exists(MODEL_COLUMNS_FILE):
     model = load(MODEL_FILE)
     trained_cols = json.load(open(MODEL_COLUMNS_FILE))
@@ -119,7 +133,7 @@ if submit:
             filled[col] = np.nan
             empty += 1
         else:
-            # Keep original scaling/int logic
+            # Original scaling/int logic
             if col in ['CRIM','ZN','INDUS','NOX','LSTAT','TAX']:
                 filled[col] = float(val) / 100
             elif col == 'CHAS':
@@ -132,7 +146,7 @@ if submit:
     else:
         input_df = pd.DataFrame([filled])
 
-        # ------------------ ALIGN WITH TRAINED MODEL COLUMNS ------------------ #
+        # ------------------ ALIGN INPUT WITH TRAINED MODEL ------------------ #
         input_filled = input_df.reindex(columns=trained_cols)
         input_filled = input_filled.fillna(housing_df[trained_cols].mean())
 
