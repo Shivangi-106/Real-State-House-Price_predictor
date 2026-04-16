@@ -71,7 +71,20 @@ Attribute Information:
     13. LSTAT    % lower status of the population
     14. MEDV     Median value of owner-occupied homes in $1000's
 
+SAMPLE PREDICTIONS:
+Model Outputs
 
+1. Decision Tree:
+    Mean:  4.189504502474483
+    Standard deviation:  0.848096620323756
+
+2. Linear Regression:
+    Mean:  4.221894675406022
+    Standard deviation:  0.7520304927151625
+
+3. Random Forest Regression
+    Mean:  3.494650261111624
+    Standard deviation:  0.762041223886678
 
 📂 Project Structure
 Plaintext
